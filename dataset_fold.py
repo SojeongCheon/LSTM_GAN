@@ -110,13 +110,22 @@ class NoduleDataset(data.Dataset):
         bg_index = random.randrange(0, len(self.bg_filenames))
         bg_sequence_path = self.data_dir + '/bg_sequence/' + self.bg_filenames[bg_index]
         bg_sequence, _ = load(bg_sequence_path)
+        # ### ### version 1 ######################################################################
         bg_sequence = np.expand_dims(bg_sequence, axis=0)                               ### (channel, x, y, seq_slices)
         bg_sequence = np.transpose(bg_sequence, (3,0,1,2))                              ### (seq_slices, channel, x, y)     
+        ### ### version 2 ######################################################################
+        # masked_bg_sequence = temp_bg_mask * bg_sequence
+        # masked_bg_sequence = np.expand_dims(masked_bg_sequence, axis=0)                 ### (channel, x, y, seq_slices)
+        # masked_bg_sequence = np.transpose(masked_bg_sequence, (3,0,1,2))                ### (seq_slices, channel, x, y)
+        # bg_sequence = np.expand_dims(bg_sequence, axis=0)                               ### (channel, x, y, seq_slices)
+        # bg_sequence = np.transpose(bg_sequence, (3,0,1,2))                              ### (seq_slices, channel, x, y)     
+        ########################################################################################
 
         ### feature information
         feature_sequence = self.find_info(self.vol_filenames[index])
         
         return masked_vol_sequence, bg_sequence, feature_sequence, gt_slice, nodule_mask, bg_mask
+        # return masked_vol_sequence, masked_bg_sequence, bg_sequence, feature_sequence, gt_slice, nodule_mask, bg_mask
 
 
 
