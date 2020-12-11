@@ -9,13 +9,8 @@ import torch.nn as nn
 import torch.autograd as autograd
 from torch.autograd import Variable
 import torch.optim as optim
+from torch.optim import lr_scheduler
 import torch.backends.cudnn as cudnn
-
-# from torch.utils.tensorboard import SummaryWriter
-# writer_path = 'log/SequentialSynthetic_' +  str(datetime.datetime.now(dateutil.tz.tzlocal()).strftime('%Y_%m_%d_%H_%M'))
-# os.makedirs(writer_path)
-# writer = SummaryWriter(writer_path)
-# print(writer_path)
 
 import numpy as np
 import random
@@ -90,10 +85,12 @@ class sequentialSynthesisTrainer(object):
         
     def train(self):
         netG = DeepSequentialNet(num_sequence=self.num_sequence, feature_dim=self.feature_dim, device=self.device).to(self.device)
-        netG.apply(weights_init)
         netD = Discriminator(feature_dim=self.feature_dim).to(self.device)
+        netG.apply(weights_init)
         netD.apply(weights_init)
-
+        # netG.load_state_dict(torch.load('/home/sojeong/LSTM_Synthesis2/experiments/2020_12_08_09_49_0th_fold_test_dropout/model/netG_final.pth', map_location=lambda storage, loc: storage))
+        # netD.load_state_dict(torch.load('/home/sojeong/LSTM_Synthesis2/experiments/2020_12_08_09_49_0th_fold_test_dropout/model/netD_final.pth', map_location=lambda storage, loc: storage))
+  
         print("********************************************netG********************************************")
         print(netG)
         print("********************************************netD********************************************")
@@ -105,7 +102,7 @@ class sequentialSynthesisTrainer(object):
         ### optimizer, loss func
         optimizerG = optim.Adam(netG.parameters(), lr=self.g_learning_rate, betas=(0.5, 0.999))
         optimizerD = optim.Adam(netD.parameters(), lr=self.d_learning_rate, betas=(0.5, 0.999))
-        
+
         MSE_criterion = nn.MSELoss().to(self.device)
         L1_criterion = nn.L1Loss().to(self.device)
         BCE_criterion = nn.BCEWithLogitsLoss().to(self.device)
@@ -116,19 +113,21 @@ class sequentialSynthesisTrainer(object):
 
         total_step = 0
         result_print_step = 100
-        for epoch in range(self.epochs):
+        start_time_step = time.time()
+        
+        for epoch in range(0, self.epochs):
             if epoch == 50 :
                 result_print_step = 500
+
             start_time_epoch = time.time()
-            netG.train()
-            netD.train()
-
             for data in self.train_dataloader:
-                start_time_step = time.time()
-
+                netG.train()
+                netD.train()
                 ### data preparation
+                # masked_vol_sequence, masked_bg_sequence, bg_sequence, feature_sequence, real_slice, nodule_mask, bg_mask = data
                 masked_vol_sequence, bg_sequence, feature_sequence, real_slice, nodule_mask, bg_mask = data
                 masked_vol_sequence = Variable(masked_vol_sequence).float().to(self.device)
+                # masked_bg_sequence = Variable(masked_bg_sequence).float().to(self.device)
                 bg_sequence = Variable(bg_sequence).float().to(self.device)
                 feature_sequence = Variable(feature_sequence).float().to(self.device)
                 real_slice = Variable(real_slice).float().to(self.device)
@@ -139,6 +138,7 @@ class sequentialSynthesisTrainer(object):
                 netG.requires_grad_(True)
                 fake_slice1 = netG(masked_vol_sequence, feature_sequence)
                 fake_slice2 = netG(bg_sequence, feature_sequence)
+                # fake_slice2 = netG(masked_bg_sequence, feature_sequence)
 
                 ##########################
                 ### update discriminator
@@ -149,20 +149,20 @@ class sequentialSynthesisTrainer(object):
                 fake_logit1, fake_feature1, fake_yn1 = netD(fake_slice1.detach())
                 fake_logit2, fake_feature2, fake_yn2 = netD(fake_slice2.detach())
                 gradient_penalty1 = calc_gradient_penalty(netD, real_slice, fake_slice1.detach(), self.device)
-                gradient_penalty2 = calc_gradient_penalty(netD, bg_sequence[:,1,:,:,:], fake_slice2.detach(), self.device)
+                gradient_penalty2 = calc_gradient_penalty(netD, bg_sequence[:,1,:,:,:], fake_slice2.detach(), self.device)   ### 여기
 
                 errD_wgan_gp1 = -torch.mean(real_logit1) + torch.mean(fake_logit1) + gradient_penalty1 
                 errD_wgan_gp2 = -torch.mean(real_logit2) + torch.mean(fake_logit2) + gradient_penalty2 
                 errD_feature = MSE_criterion(real_feature1, feature_sequence) + MSE_criterion(fake_feature1, feature_sequence) + MSE_criterion(fake_feature2, feature_sequence)
                 errD_yn = BCE_criterion(real_yn1, real_labels) + BCE_criterion(real_yn2, fake_labels) + BCE_criterion(fake_yn1, real_labels) + BCE_criterion(fake_yn2, real_labels)
-
+                
                 errD = errD_wgan_gp1 + errD_wgan_gp2 + self.feature_lambda * errD_feature + self.yn_lambda * errD_yn
 
                 netD.zero_grad()
                 errD.backward()
-                optimizerD.step()
+                optimizerD.step()  
                 netD.requires_grad_(False)
-                    
+
                 ##########################
                 ### update generator
                 ##########################
@@ -177,7 +177,7 @@ class sequentialSynthesisTrainer(object):
                     
                     cnt_nodule = torch.count_nonzero(nodule_mask) 
                     errG_nodule = (L1_criterion(fake_slice1*nodule_mask, real_slice*nodule_mask) + L1_criterion(fake_slice2*nodule_mask, real_slice*nodule_mask)) / cnt_nodule * (self.image_size*self.image_size*self.batch_size)
-                    errG_bg = (L1_criterion(fake_slice1*bg_mask, real_slice*bg_mask) + L1_criterion(fake_slice2*bg_mask, bg_sequence[:,1,:,:,:]*bg_mask))  
+                    errG_bg = L1_criterion(fake_slice1*bg_mask, real_slice*bg_mask) + L1_criterion(fake_slice2*bg_mask, bg_sequence[:,1,:,:,:]*bg_mask)
                     errG_feature = MSE_criterion(pred_feature1, feature_sequence) + MSE_criterion(pred_feature2, feature_sequence)
                     errG_yn = BCE_criterion(pred_yn1, real_labels) + BCE_criterion(pred_yn2, real_labels) 
 
@@ -192,7 +192,7 @@ class sequentialSynthesisTrainer(object):
                     end_time_step = time.time()  
                     
                     ### print loss
-                    print('[%d / %d - %d step] errD : %.5f  errG : %.5f  err_nodules : %.5f err_backgrounds : %.5f time : %.2fs' % (epoch, self.epochs, total_step, errD.item(), errG.item(), errG_nodule.item(), errG_bg.item(), end_time_step - start_time_step))                
+                    print('[%d / %d - %d step] errD : %.5f  errG : %.5f  err_nodules : %.5f err_backgrounds : %.5f  time : %.2fs' % (epoch, self.epochs, total_step, errD.item(), errG.item(), errG_nodule.item(), errG_bg.item(),  end_time_step - start_time_step))                
                     
                     self.writer.add_scalar('train_loss/errD', errD.item(), total_step)
                     self.writer.add_scalar('train_loss/errD_wgan_gp1', errD_wgan_gp1.item(), total_step)
@@ -206,6 +206,7 @@ class sequentialSynthesisTrainer(object):
                     self.writer.add_scalar('train_loss/err_backgrounds', errG_bg.item(), total_step)
                     self.writer.add_scalar('train_loss/errG_feature', errG_feature.item(), total_step)
                     self.writer.add_scalar('train_loss/errG_yn', errG_yn.item(), total_step)
+
 
                     ## print result image
                     if total_step % result_print_step == 0:
@@ -258,7 +259,8 @@ class sequentialSynthesisTrainer(object):
                         
                         netG.train()
                         netD.train()
-                        
+                    start_time_step = time.time()
+
                 total_step += 1
             
             end_time_epoch = time.time()
@@ -266,15 +268,23 @@ class sequentialSynthesisTrainer(object):
             ##########################################################
             ##########################################################
             ##########################################################
-            netG.train()
-            netD.train()
+            netG.eval()
+            for m in netG.modules():
+                if m.__class__.__name__.startswith('Dropout'):
+                    m.train()
+            netD.eval()
+            for m in netD.modules():
+                if m.__class__.__name__.startswith('Dropout'):
+                    m.train()
             netG.requires_grad_(False)
             netD.requires_grad_(False)
             
             with torch.no_grad():
                 for data in self.test_dataloader:
+                    # test_masked_vol_sequence, test_masked_bg_sequence, test_bg_sequence, test_feature_sequence, test_real_slice, nodule_mask, bg_mask = data
                     test_masked_vol_sequence, test_bg_sequence, test_feature_sequence, test_real_slice, nodule_mask, bg_mask = data
                     test_masked_vol_sequence = Variable(test_masked_vol_sequence).float().to(self.device)
+                    # test_masked_bg_sequence = Variable(test_masked_bg_sequence).float().to(self.device)
                     test_bg_sequence = Variable(test_bg_sequence).float().to(self.device)
                     test_feature_sequence = Variable(test_feature_sequence).float().to(self.device)
                     test_real_slice = Variable(test_real_slice).float().to(self.device)
@@ -283,6 +293,7 @@ class sequentialSynthesisTrainer(object):
                     
                     test_fake_slice1 = netG(test_masked_vol_sequence, test_feature_sequence)
                     test_fake_slice2 = netG(test_bg_sequence, test_feature_sequence)
+                    # test_fake_slice2 = netG(test_masked_bg_sequence, test_feature_sequence)
 
                     #######################################################
                     #######################################################  
@@ -290,10 +301,10 @@ class sequentialSynthesisTrainer(object):
                     fake_logit2, fake_feature2, fake_yn2 = netD(test_fake_slice2)
                     
                     cnt_nodule = torch.count_nonzero(nodule_mask) 
-                    test_errG_nodule = L1_criterion(test_fake_slice1*nodule_mask, test_real_slice*nodule_mask) + L1_criterion(test_fake_slice2*nodule_mask, test_real_slice*nodule_mask) / cnt_nodule * (self.image_size*self.image_size*self.batch_size)
+                    test_errG_nodule = (L1_criterion(test_fake_slice1*nodule_mask, test_real_slice*nodule_mask) + L1_criterion(test_fake_slice2*nodule_mask, test_real_slice*nodule_mask)) / cnt_nodule * (self.image_size*self.image_size*self.batch_size)
                     test_errG_bg = L1_criterion(test_fake_slice1*bg_mask, test_real_slice*bg_mask) + L1_criterion(test_fake_slice2*bg_mask, test_bg_sequence[:,1,:,:,:]*bg_mask) 
                     test_errG_feature = MSE_criterion(fake_feature1, test_feature_sequence) + MSE_criterion(fake_feature2, test_feature_sequence)
-                    test_errG_yn = MSE_criterion(fake_yn1, real_labels) + MSE_criterion(fake_yn2, real_labels) 
+                    test_errG_yn = BCE_criterion(fake_yn1, real_labels) + BCE_criterion(fake_yn2, real_labels)    ### .......... hahahah....h......ㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋ 욕먹어도 싸다
 
                     test_errG = - torch.mean(fake_logit1) - torch.mean(fake_logit2) + self.nodule_lambda * test_errG_nodule + self.background_lambda * test_errG_bg + test_errG_feature + test_errG_yn
                     
@@ -351,9 +362,9 @@ class sequentialSynthesisTrainer(object):
                     cv2.imwrite(self.test_result_dir + '/epoch_' + str(epoch) + '_step' + str(total_step) +'.png', result_imgs)
                     break  
 
-                if epoch % 20 == 0:
-                    torch.save(netG.state_dict(), '%s/netG_epoch%d.pth' % (self.model_dir, epoch))
-                    torch.save(netD.state_dict(), '%s/netD_epoch%d.pth' % (self.model_dir, epoch))
+            if epoch % 20 == 0:
+                torch.save(netG.state_dict(), '%s/netG_epoch%d.pth' % (self.model_dir, epoch))
+                torch.save(netD.state_dict(), '%s/netD_epoch%d.pth' % (self.model_dir, epoch))
         torch.save(netG.state_dict(), '%s/netG_final.pth' % (self.model_dir))
         torch.save(netD.state_dict(), '%s/netD_final.pth' % (self.model_dir))
 
